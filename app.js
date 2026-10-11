@@ -1,12 +1,14 @@
-<script>
 /* ================= 유틸 ================= */
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const run = (fn, ...a) => new Promise((ok, no) => {
-  const r = google.script.run.withSuccessHandler(ok).withFailureHandler(e => no(e));
-  r[fn](...a);
-});
+const run = async (fn, ...a) => {
+  const r = await fetch('/api/rpc', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: fn, args: a }) });
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 401) { showLogin(); throw new Error('로그인이 필요해요'); }
+  if (!r.ok || j.error) throw new Error(j.error || '요청에 실패했어요');
+  return j.data;
+};
 let toastT;
 function toast(m) { const t = $('#toast'); t.textContent = m; t.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), 2400); }
 
@@ -377,7 +379,7 @@ function openProfile() {
     <label class="l">목표 진로</label><select class="f" id="pCareer">${Object.keys(S.cfg.careers).map(c => `<option ${c === p.career ? 'selected' : ''}>${c}</option>`).join('')}</select>
     <label class="l">학년</label><select class="f" id="pGrade">${[1, 2, 3, 4].map(g => `<option ${g === Number(p.grade) ? 'selected' : ''} value="${g}">${g}학년</option>`).join('')}</select>
     <label class="l">목표 역량 태그 <small>쉼표로 구분 · 예: 글로벌, 데이터분석</small></label><input type="text" id="pGoals" value="${esc((p.goalTags || []).join(', '))}">
-    <div class="row" style="margin-top:16px"><button class="btn" data-act="saveProfile">저장</button></div>`;
+    <div class="row" style="margin-top:16px"><button class="btn" data-act="saveProfile">저장</button><button class="btn ghost" data-act="logout">로그아웃</button></div>`;
   $('#modal').classList.add('on'); $('#scrim').classList.add('on');
 }
 
@@ -446,6 +448,7 @@ document.addEventListener('click', async e => {
       saveRm(); toast('선배의 활동을 로드맵 활동함에 담았어요'); break;
     }
     case 'profile': openProfile(); break;
+    case 'logout': await fetch('/api/auth', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'logout' }) }); location.reload(); break;
     case 'saveProfile': {
       try {
         S.profile = await run('saveProfile', { name: $('#pName').value, career: $('#pCareer').value, grade: $('#pGrade').value, goalTags: $('#pGoals').value.split(',').map(x => x.trim().replace(/^#/, '')).filter(Boolean) });
@@ -470,5 +473,23 @@ document.addEventListener('drop', e => {
 document.addEventListener('dragend', () => $$('.col.over').forEach(x => x.classList.remove('over')));
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeAll(); });
 window.addEventListener('resize', () => { drawLinks(); if (S.chart) S.chart.resize(); });
-window.addEventListener('load', init);
-</script>
+/* ================= 로그인 (Google Sign-In) ================= */
+function showLogin(cid) {
+  if (cid) window.__cid = cid;
+  $('#login').classList.add('on');
+  if (!window.google || !google.accounts) { setTimeout(() => showLogin(), 300); return; }
+  google.accounts.id.initialize({ client_id: window.__cid, callback: onCred });
+  google.accounts.id.renderButton($('#gbtn'), { theme: 'outline', size: 'large', shape: 'pill', text: 'signin_with', locale: 'ko' });
+}
+async function onCred(resp) {
+  const r = await fetch('/api/auth', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'login', credential: resp.credential }) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) return toast(j.error || '로그인에 실패했어요');
+  location.reload();
+}
+async function boot() {
+  const me = await fetch('/api/auth', { credentials: 'same-origin' }).then(r => r.json()).catch(() => ({}));
+  window.__cid = me.clientId;
+  if (me.authed) init(); else { $('#boot').remove(); showLogin(me.clientId); }
+}
+window.addEventListener('load', boot);
